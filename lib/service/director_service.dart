@@ -375,7 +375,7 @@ class DirectorService {
     }
     if (isOperating) return;
     if (position >= duration) return;
-    logger.i('DirectorService.play()');
+
     isPlaying = true;
     scrollController.removeListener(_listenerScrollController);
     _appBar.add(true);
@@ -383,7 +383,6 @@ class DirectorService {
 
     final mainLayer = mainLayerForConcurrency();
     if (mainLayer == -1 || mainLayer >= layers.length) {
-      logger.e('Invalid main layer for playback.');
       isPlaying = false;
       _appBar.add(true);
       return;
@@ -391,48 +390,55 @@ class DirectorService {
 
     final mainPlayer = layerPlayers[mainLayer];
     if (mainPlayer == null) {
-      logger.e('Main layer player is null.');
       isPlaying = false;
       _appBar.add(true);
       return;
     }
 
-    // Attach callbacks only to the main layer
-    await mainPlayer.play(
-      position,
-      onMove: (newPosition) {
-        _position.add(newPosition);
-        scrollController.animateTo(
-          (300 + newPosition) / 1000 * pixelsPerSecond,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.linear,
-        );
-        // Update all other layers based on the new position
-        _syncOtherLayers(newPosition);
-      },
-      onEnd: () {
-        isPlaying = false;
-        _appBar.add(true);
-        // Optionally stop all other layers
-        _stopAllLayers();
-      },
-    );
-
-    // Start playback for other layers without awaiting
+    // Start playback for all layers
     for (int i = 0; i < layers.length; i++) {
-      if (i == mainLayer || i == 1) continue; // Skip main and text layers
       final player = layerPlayers[i];
       if (player == null) continue;
-      player.play(position); // Consider handling errors
+      await player.play(
+        position,
+        onMove: (newPosition) {
+          if (newPosition >= duration) {
+            _position.add(duration);
+            scrollController.animateTo(
+              (duration / 1000) * pixelsPerSecond,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.linear,
+            );
+            play(); // Stop playback when duration is reached
+          } else {
+            _position.add(newPosition);
+            scrollController.animateTo(
+              (newPosition / 1000) * pixelsPerSecond,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.linear,
+            );
+            _syncOtherLayers(newPosition);
+          }
+        },
+        onEnd: () {
+          if (i == mainLayer) {
+            isPlaying = false;
+            _appBar.add(true);
+            _stopAllLayers();
+            play();
+          }
+        },
+      );
     }
   }
 
   void _syncOtherLayers(int newPosition) {
+    final mainLayer = mainLayerForConcurrency();
     for (int i = 0; i < layers.length; i++) {
-      if (i == mainLayerForConcurrency() || i == 1) continue; // Skip main and text layers
+      if (i == mainLayer || layers[i].type == 'text') continue; // Skip main and text layers
       final player = layerPlayers[i];
       if (player == null) continue;
-      player.preview(newPosition); // Implement a seek method in LayerPlayer
+      player.seek(newPosition); // Ensure LayerPlayer has a seek method
     }
   }
 

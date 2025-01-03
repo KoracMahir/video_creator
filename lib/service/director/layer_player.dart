@@ -50,7 +50,15 @@ class LayerPlayer {
     // Only preview if the asset is actually a video.
     if (layer.assets[currentAssetIndex].type != AssetType.video) return;
 
-    _newPosition = pos - layer.assets[currentAssetIndex].begin!;
+    final asset = layer.assets[currentAssetIndex];
+
+    if (asset.cutFrom == 0) {
+      _newPosition = pos - asset.begin!;
+    } else {
+      _newPosition = (pos - asset.begin!) + asset.cutFrom!;
+    }
+
+    print("_newPosition preview $_newPosition $pos");
 
     // Mute preview
     await _videoController.setVolume(0);
@@ -82,17 +90,20 @@ class LayerPlayer {
     _onJump = onJump;
     _onEnd = onEnd;
 
-    // Find the asset index to play based on position.
     currentAssetIndex = getAssetByPosition(pos);
     if (currentAssetIndex == -1) return;
 
-    // Set volume for this layer.
+    final asset = layer.assets[currentAssetIndex];
     await _videoController.setVolume(layer.volume);
 
-    _newPosition = pos - layer.assets[currentAssetIndex].begin!;
-    print("_newPosition ${_newPosition}");
+    if (asset.cutFrom == 0) {
+      _newPosition = pos - asset.begin!;
+    } else {
+      _newPosition = (pos - asset.begin!) + asset.cutFrom!;
+    }
 
-    // Seek to the correct source index and position
+    print("_newPosition play $_newPosition $pos");
+
     await _videoController.seekToSource(
       currentAssetIndex,
       Duration(milliseconds: _newPosition!),
@@ -100,8 +111,47 @@ class LayerPlayer {
 
     await _videoController.play();
 
-    // Attach a listener to track position changes and detect end-of-playback
     _videoController.addListener(_multiSourceListener);
+  }
+
+  Future<void> seek(int position) async {
+    if (position < 0) position = 0;
+
+    // Determine the asset corresponding to the new position
+    int assetIndex = getAssetByPosition(position);
+    if (assetIndex == -1) {
+      // If position exceeds all assets, stop playback
+      await stop();
+      return;
+    }
+
+    final asset = layer.assets[assetIndex];
+    int newLocalPosition;
+
+    if (asset.cutFrom == 0) {
+      newLocalPosition = position - asset.begin!;
+    } else {
+      newLocalPosition = (position - asset.begin!) + asset.cutFrom!;
+    }
+
+    // Update current asset index
+    currentAssetIndex = assetIndex;
+
+    // Seek the video controller to the new position within the asset
+    await _videoController.seekToSource(
+      currentAssetIndex,
+      Duration(milliseconds: newLocalPosition),
+    );
+
+    // Resume playback if it was playing before seeking
+    if (_videoController.value.isPlaying) {
+      await _videoController.play();
+    }
+
+    // Notify about the seek
+    if (_onMove != null) {
+      _onMove!(position);
+    }
   }
 
   ///
@@ -126,15 +176,22 @@ class LayerPlayer {
   void _multiSourceListener() {
     final v = _videoController.value;
 
-    // If there's no valid "source index" concept in your MultiSource controller,
-    // you might implement it yourself. For example, if you track the current
-    // source index internally, you can expose it via a getter:
+    // Get the current source index from the controller
     final windowIndex = _currentSourceIndexOfController();
+
+    if (windowIndex == -1) return;
+
+    final asset = layer.assets[windowIndex];
+    final beginOfAsset = asset.begin!;
+    final cutFrom = asset.cutFrom ?? 0;
 
     // Convert from local position in the current asset to global position.
     final currentPosMs = v.position.inMilliseconds;
-    final beginOfAsset = layer.assets[windowIndex].begin;
-    _newPosition = currentPosMs + beginOfAsset!;
+    if((currentPosMs + beginOfAsset - cutFrom)<0){
+      _newPosition = currentPosMs + beginOfAsset;
+    }else{
+      _newPosition = currentPosMs + beginOfAsset - cutFrom;
+    }
 
     // onMove callback
     if (_onMove != null && _newPosition != null) {
@@ -150,9 +207,9 @@ class LayerPlayer {
     }
 
     // If we are done playing the current asset
-    final assetDuration = layer.assets[windowIndex].duration;
+    final assetDuration = asset.duration!;
     final isAtEnd = (!v.isPlaying &&
-        v.position.inMilliseconds >= (assetDuration! - 100));
+        v.position.inMilliseconds >= (assetDuration - 100));
 
     if (isAtEnd) {
       stop().then((_) {

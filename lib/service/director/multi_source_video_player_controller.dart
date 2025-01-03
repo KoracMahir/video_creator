@@ -121,30 +121,26 @@ class MultiSourceVideoPlayerController extends ValueNotifier<VideoPlayerValue>
   /// Helper to clean up any old active controller, then create a new one
   /// for [_currentSourceIndex].
   Future<void> _initializeActiveController() async {
-    // Dispose the old one if present
     if (_activeController != null) {
       await _activeController!.dispose();
       _activeController = null;
     }
 
     final activeSource = _sources[_currentSourceIndex];
+    print("Initializing source $_currentSourceIndex: ${activeSource.uri} from ${activeSource.startMs} to ${activeSource.endMs}");
 
-    // Decide if we create an asset-based controller or network-based, etc.
-    // (Some folks might also support `VideoPlayerController.file(File(uri))`.)
     final ctrl = activeSource.isAsset
         ? VideoPlayerController.asset(activeSource.uri)
         : VideoPlayerController.network(activeSource.uri);
 
     _activeController = ctrl..addListener(_onInnerValueChanged);
 
-    // Standard initialization of the underlying VideoPlayerController
     await ctrl.initialize();
+    print("Controller initialized for source $_currentSourceIndex");
 
-    // We can optionally "seek" to startMs. For advanced usage, you might
-    // clamp the position so it doesn't exceed `endMs`.
     await ctrl.seekTo(Duration(milliseconds: activeSource.startMs));
+    print("Controller seeked to ${activeSource.startMs} ms");
 
-    // Reflect the current sub-controller's value
     value = ctrl.value;
   }
 
@@ -237,12 +233,11 @@ class MultiSourceVideoPlayerController extends ValueNotifier<VideoPlayerValue>
     if (_isDisposed) return;
     if (sourceIndex < 0 || sourceIndex >= _sources.length) return;
 
-    // Switch if needed
     if (sourceIndex != _currentSourceIndex) {
       _currentSourceIndex = sourceIndex;
       await _initializeActiveController();
     }
-    // Then seek
+
     if (_activeController != null) {
       await _activeController!.seekTo(position);
     }
