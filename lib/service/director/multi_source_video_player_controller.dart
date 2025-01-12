@@ -28,6 +28,8 @@ class MultiSourceVideoPlayerController extends ValueNotifier<VideoPlayerValue>
   /// Internal list of sources in this "playlist".
   final List<_MediaSource> _sources = [];
 
+  int get sourceCount => _sources.length;
+
   /// The index of the currently playing source in [_sources].
   int _currentSourceIndex = 0;
 

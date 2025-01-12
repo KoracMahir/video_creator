@@ -24,19 +24,31 @@ class DragClosest extends StatelessWidget {
           double left;
           if (directorService.isDragging &&
               selected.data!.closestAsset != -1 &&
-              selected.data!.layerIndex == layerIndex) {
+              // 1) Make sure the layerIndex is valid for layers
+              layerIndex >= 0 &&
+              layerIndex < directorService.layers.length &&
+              // 2) Make sure the closestAsset index is valid for that layer's assets
+              selected.data!.closestAsset >= 0 &&
+              selected.data!.closestAsset < directorService.layers[layerIndex].assets.length &&
+              // 3) Make sure the selected layerIndex matches this widget's layerIndex
+              selected.data!.layerIndex == layerIndex
+          ) {
+            // Safe to access assets[selected.data!.closestAsset]
             color = Colors.pink;
             Asset closestAsset = directorService
-                .layers[layerIndex].assets[selected.data!.closestAsset];
+                .layers[layerIndex]
+                .assets[selected.data!.closestAsset];
+
             if (selected.data!.closestAsset <= selected.data!.assetIndex) {
-              left =
-                  closestAsset.begin! * directorService.pixelsPerSecond / 1000.0;
+              left = closestAsset.begin! * directorService.pixelsPerSecond / 1000.0;
             } else {
-              left = (closestAsset.begin! + closestAsset.duration!) *
-                  directorService.pixelsPerSecond /
-                  1000.0;
+              left = (closestAsset.begin! + closestAsset.duration!)
+                  * directorService.pixelsPerSecond
+                  / 1000.0;
             }
+
           } else {
+            // Either not dragging or some index is invalid
             color = Colors.transparent;
             left = -1;
           }

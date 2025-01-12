@@ -1,7 +1,6 @@
 import 'package:video_player/video_player.dart'; // For VideoPlayerValue, etc.
 import '../../model/model.dart';
 import 'multi_source_video_player_controller.dart';
-// ^ Import your custom class here.
 
 class LayerPlayer {
   /// The layer this player is responsible for.
@@ -58,6 +57,7 @@ class LayerPlayer {
       _newPosition = (pos - asset.begin!) + asset.cutFrom!;
     }
 
+    // Debug info
     print("_newPosition preview $_newPosition $pos");
 
     // Mute preview
@@ -69,10 +69,10 @@ class LayerPlayer {
       Duration(milliseconds: _newPosition!),
     );
 
+    // Briefly play, then pause
     await _videoController.play();
     await _videoController.pause();
   }
-
 
   ///
   /// Play from a given global [pos]. Optionally provide callbacks:
@@ -102,8 +102,10 @@ class LayerPlayer {
       _newPosition = (pos - asset.begin!) + asset.cutFrom!;
     }
 
+    // Debug info
     print("_newPosition play $_newPosition $pos");
 
+    // Seek to the correct source index and position
     await _videoController.seekToSource(
       currentAssetIndex,
       Duration(milliseconds: _newPosition!),
@@ -111,6 +113,7 @@ class LayerPlayer {
 
     await _videoController.play();
 
+    // Attach listener to track position / asset changes
     _videoController.addListener(_multiSourceListener);
   }
 
@@ -178,7 +181,6 @@ class LayerPlayer {
 
     // Get the current source index from the controller
     final windowIndex = _currentSourceIndexOfController();
-
     if (windowIndex == -1) return;
 
     final asset = layer.assets[windowIndex];
@@ -187,9 +189,11 @@ class LayerPlayer {
 
     // Convert from local position in the current asset to global position.
     final currentPosMs = v.position.inMilliseconds;
-    if((currentPosMs + beginOfAsset - cutFrom)<0){
+
+    // Handle negative or zero cutFrom safely
+    if ((currentPosMs + beginOfAsset - cutFrom) < 0) {
       _newPosition = currentPosMs + beginOfAsset;
-    }else{
+    } else {
       _newPosition = currentPosMs + beginOfAsset - cutFrom;
     }
 
@@ -206,22 +210,19 @@ class LayerPlayer {
       }
     }
 
-    // If we are done playing the current asset
+    // Check if we've reached the end of this asset
     final assetDuration = asset.duration!;
     final isAtEnd = (!v.isPlaying &&
         v.position.inMilliseconds >= (assetDuration - 100));
+    final lastIndex = _videoController.sourceCount - 1;
+    final isLastAsset = (windowIndex == lastIndex);
 
-    if (isAtEnd) {
+    if (isAtEnd && isLastAsset) {
+      // We are at the end of the last asset -> Full stop
       stop().then((_) {
         currentAssetIndex = -1;
-
-        // Possibly a 'jump' to nothing
-        if (_onJump != null) {
-          _onJump!();
-        }
-        if (_onEnd != null) {
-          _onEnd!();
-        }
+        if (_onJump != null) _onJump!();
+        if (_onEnd != null) _onEnd!();
       });
     }
   }
@@ -239,6 +240,9 @@ class LayerPlayer {
   /// covering the time span from [asset.cutFrom] to [asset.cutFrom + asset.duration].
   ///
   Future<void> addMediaSource(int index, Asset asset) async {
+    // Guard if the index is out of range
+    if (index < 0 || index > layer.assets.length) return;
+
     if (asset.type == AssetType.image) {
       // Insert a blank video for an image-based asset
       await _videoController.addMediaSource(
@@ -268,6 +272,20 @@ class LayerPlayer {
   }
 
   ///
+  /// (NOVO) Uklanja SVE media source-ove iz underlying kontrolera.
+  ///
+  Future<void> removeAllMediaSources() async {
+    // Pretpostavimo da MultiSourceVideoPlayerController ima npr.
+    //    get sourceCount => ...
+    // ili slično da znamo koliko ima izvora.
+    final count = _videoController.sourceCount; // prilagodite svom kodu
+    // Krećemo od poslednjeg ka prvom da bismo izbegli probleme sa indeksima
+    for (int i = count - 1; i >= 0; i--) {
+      await removeMediaSource(i);
+    }
+  }
+
+  ///
   /// Release any held resources.
   ///
   Future<void> dispose() async {
@@ -277,14 +295,7 @@ class LayerPlayer {
 
   /// Example helper if your MultiSourceVideoPlayerController
   /// has an internal notion of the "current source index."
-  /// If not, you may implement logic to determine it by matching positions or
-  /// store it within the multi-source controller itself.
   int _currentSourceIndexOfController() {
-    // If your custom controller exposes something like:
-    //    int get currentIndex => ...
-    // Then just do: return _videoController.currentIndex;
-    //
-    // Otherwise, you might approximate by looking at your own currentAssetIndex:
     return _videoController.currentIndex;
   }
 }

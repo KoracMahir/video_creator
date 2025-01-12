@@ -132,6 +132,7 @@ class _AppBar2Landscape extends StatelessWidget {
     children.add(_ButtonAdd());
     if (directorService.layers[0].assets.isNotEmpty &&
         !directorService.isPlaying) {
+      children.add(_ButtonSync());
       children.add(_ButtonPlay());
     }
     if (directorService.isPlaying) {
@@ -156,19 +157,29 @@ class _AppBar2Portrait extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Children in the right side of the app bar
     List<Widget> children = [];
     children.add(_ButtonAdd());
-    if (directorService.layers[0].assets.isNotEmpty &&
-        !directorService.isPlaying) {
-      children.add(_ButtonPlay());
-    }
-    if (directorService.isPlaying) {
-      children.add(_ButtonPause());
-    }
-    if (directorService.layers[0].assets.isNotEmpty) {
-      children.add(_ButtonGenerate());
+
+    // Before accessing layers[0], check that layers is NOT empty.
+    if (directorService.layers.isNotEmpty) {
+      // Now it's safe to reference layers[0]
+
+      if (directorService.layers[0].assets.isNotEmpty && !directorService.isPlaying) {
+        children.add(_ButtonSync());
+        children.add(_ButtonPlay());
+      }
+
+      if (directorService.isPlaying) {
+        children.add(_ButtonPause());
+      }
+
+      if (directorService.layers[0].assets.isNotEmpty) {
+        children.add(_ButtonGenerate());
+      }
     }
 
+    // Children in the left side of the app bar
     List<Widget> children2 = [];
     if (directorService.selected.layerIndex != -1) {
       children2.add(_ButtonDelete());
@@ -368,6 +379,22 @@ class _ButtonPlay extends StatelessWidget {
       mini: MediaQuery.of(context).size.width < 900,
       child: Icon(Icons.play_arrow, color: Colors.white),
       onPressed: directorService.play,
+    );
+  }
+}
+
+class _ButtonSync extends StatelessWidget {
+  final directorService = locator.get<DirectorService>();
+
+  @override
+  Widget build(BuildContext context) {
+    return FloatingActionButton(
+      heroTag: "play",
+      tooltip: "Play",
+      backgroundColor: Colors.blue,
+      mini: MediaQuery.of(context).size.width < 900,
+      child: Icon(Icons.sync, color: Colors.white),
+      onPressed: directorService.reinitializeCurrentProjectInPlace,
     );
   }
 }

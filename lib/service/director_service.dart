@@ -20,7 +20,6 @@ import 'director/generator.dart';
 import 'director/layer_player.dart';
 
 class DirectorService {
-  /// The currently open [Project]. Nullable until set in [setProject].
   Project? project;
 
   final logger = locator.get<Logger>();
@@ -29,7 +28,6 @@ class DirectorService {
   final projectDao = locator.get<ProjectDao>();
 
   /// The top-level list of layers in this project. Non-nullable and
-  /// initialized to an empty list, then replaced in [setProject].
   List<Layer> layers = [];
 
   // ---------------------------------------------------------------------------
@@ -208,7 +206,7 @@ class DirectorService {
   Future<void> setProject(Project newProject) async {
     isEntering = true;
 
-    // Reset relevant streams
+    // Reset osnovnih parametara
     _position.add(0);
     _selected.add(Selected(layerIndex: -1, assetIndex: -1));
     editingTextAsset = null;
@@ -216,16 +214,15 @@ class DirectorService {
     _pixelsPerSecond.add(DEFAULT_PIXELS_PER_SECONDS);
     _appBar.add(true);
 
-    // If it's a different project, load layers, etc.
     if (project != newProject) {
       project = newProject;
 
-      // If no layers JSON, create a default set
+      // Ako nema layersJson, podesi default
       if (project!.layersJson == null) {
         layers = [
-          Layer(type: 'raster', volume: 0.1),
+          Layer(type: 'raster', volume: 1.0),
           Layer(type: 'vector'),
-          Layer(type: 'audio', volume: 1.0),
+          Layer(type: 'audio',  volume: 1.0),
         ];
       } else {
         layers = (json.decode(project!.layersJson!) as List)
@@ -235,33 +232,58 @@ class DirectorService {
       }
       _layersChanged.add(true);
 
-      // Initialize layer players
+      // 1) Napravimo prazan spisak za Player-e
       layerPlayers = <LayerPlayer?>[];
+
+      // 2) Inicijalizacija u paraleli
+      final initFutures = <Future>[];
       for (int i = 0; i < layers.length; i++) {
         if (i == 1) {
-          // Possibly a placeholder for text layer
+          // npr. text layer nema player
           layerPlayers.add(null);
         } else {
           final layerPlayer = LayerPlayer(layers[i]);
-          await layerPlayer.initialize(); // Ensure this is awaited
+          initFutures.add(layerPlayer.initialize());
           layerPlayers.add(layerPlayer);
         }
       }
 
+      // Sada paralelno cekamo sve initFuture-ove
+      await Future.wait(initFutures);
+
+      // 3) Opcionalno, preview video asset-a takodje u paraleli
+      final previewFutures = <Future>[];
       for (final layerPlayer in layerPlayers) {
         if (layerPlayer != null) {
           for (final asset in layerPlayer.layer.assets) {
             if (asset.type == AssetType.video) {
-              await layerPlayer.preview(asset.begin!);
+              previewFutures.add(layerPlayer.preview(asset.begin!));
             }
           }
         }
       }
+
+      await Future.wait(previewFutures);
     }
 
     isEntering = false;
-    await _previewOnPosition(); // Ensure previews are triggered after initialization
+    await _previewOnPosition();
   }
+
+  Future<void> reinitializeCurrentProjectInPlace() async {
+
+    if (isPlaying) {
+      await stop(); // or _stopAllLayers() if needed
+    }
+
+    await layerPlayers[0]?.removeAllMediaSources();
+    for (int i = 0; i < layers[0].assets.length; i++) {
+      await layerPlayers[0]?.addMediaSource(i, layers[0].assets[i]);
+    }
+    layerPlayers[0]?.seek(position);
+
+  }
+
 
   /// Returns `true` if any file no longer exists on disk.
   bool checkSomeFileNotExists() {
@@ -409,7 +431,7 @@ class DirectorService {
               duration: const Duration(milliseconds: 300),
               curve: Curves.linear,
             );
-            play(); // Stop playback when duration is reached
+            // play(); // Stop playback when duration is reached
           } else {
             _position.add(newPosition);
             scrollController.animateTo(
@@ -425,7 +447,7 @@ class DirectorService {
             isPlaying = false;
             _appBar.add(true);
             _stopAllLayers();
-            play();
+            // play();
           }
         },
       );
@@ -435,12 +457,16 @@ class DirectorService {
   void _syncOtherLayers(int newPosition) {
     final mainLayer = mainLayerForConcurrency();
     for (int i = 0; i < layers.length; i++) {
-      if (i == mainLayer || layers[i].type == 'text') continue; // Skip main and text layers
+      if (i == mainLayer || layers[i].type == 'text') continue;
       final player = layerPlayers[i];
       if (player == null) continue;
-      player.seek(newPosition); // Ensure LayerPlayer has a seek method
+
+      // This seeks directly to `newPosition`, ignoring asset.begin
+      // or the fact that some assets might not even start yet.
+      player.seek(newPosition);
     }
   }
+
 
   void _stopAllLayers() {
     for (int i = 0; i < layers.length; i++) {
@@ -491,64 +517,78 @@ class DirectorService {
     isAdding = true;
     print('>> DirectorService.add($assetType)');
 
+    // Za hvatanje putanja iz FilePicker
     Map<String, String>? filePaths;
 
     if (assetType == AssetType.video) {
-      // 1. Pick files and store the result
+      // 1. Biramo fajlove
       final result = await FilePicker.platform.pickFiles(
         type: FileType.video,
         allowMultiple: true,
       );
 
-      // 2. Check for null or empty selection
+      // 2. Ako nema rezultata, izlazimo
       if (result == null || result.files.isEmpty) {
         isAdding = false;
         return;
       }
 
-      // 3. Convert the files into a Map<filename, path>
+      // 3. Pretvaramo u mapu {ime : putanja}
       final filePaths = {
-        for (final file in result.files)
-          file.name: file.path ?? '', // path might be null on some platforms
+        for (final file in result.files) file.name: file.path ?? '',
       };
 
-      // 4. (Optional) Sort your files by date or any desired criteria
+      // 4. (Opcionalno) sortiramo po datumu
       final fileList = _sortFilesByDate(filePaths);
 
-      // 5. Process each file
+      // 5. Za svaki fajl ga ubacimo u layer[0], generišemo thumbnail
       for (final file in fileList) {
         await _addAssetToLayer(0, AssetType.video, file.path);
         await _generateAllVideoThumbnails(layers[0].assets);
       }
+
+      // 6. Nakon dodavanja, REBUILD layer 0
+      await layerPlayers[0]?.removeAllMediaSources();
+      for (int i = 0; i < layers[0].assets.length; i++) {
+        await layerPlayers[0]?.addMediaSource(i, layers[0].assets[i]);
+      }
+
+      await _previewOnPosition();
+
     } else if (assetType == AssetType.image) {
-      // 1. Pick files and store the result
+      // 1. Biramo fajlove
       final result = await FilePicker.platform.pickFiles(
         type: FileType.image,
         allowMultiple: true,
       );
 
-      // 2. Check for null or empty selection
       if (result == null || result.files.isEmpty) {
         isAdding = false;
         return;
       }
 
-      // 3. Convert the files into a Map<filename, path>
       final filePaths = {
-        for (final file in result.files)
-          file.name: file.path ?? '', // path might be null on some platforms
+        for (final file in result.files) file.name: file.path ?? '',
       };
 
-      // 4. (Optional) Sort your files by date or any desired criteria
       final fileList = _sortFilesByDate(filePaths);
 
-      // 5. Process each file
       for (final file in fileList) {
         await _addAssetToLayer(0, AssetType.image, file.path);
         _generateKenBurnEffects(layers[0].assets.last);
         await _generateAllImageThumbnails(layers[0].assets);
       }
+
+      // REBUILD layer 0
+      await layerPlayers[0]?.removeAllMediaSources();
+      for (int i = 0; i < layers[0].assets.length; i++) {
+        await layerPlayers[0]?.addMediaSource(i, layers[0].assets[i]);
+      }
+
+      await _previewOnPosition();
+
     } else if (assetType == AssetType.text) {
+      // Text asset - obično samo pripremamo "editingTextAsset"
       editingTextAsset = Asset(
         type: AssetType.text,
         begin: 0,
@@ -556,6 +596,9 @@ class DirectorService {
         title: '',
         srcPath: '',
       );
+      // Ovaj deo ne rebuild-uje layer, jer text layer (layerIndex = 1) nema player.
+      // Ako želite odmah da ga dodate i rebuild-ujete, prilagodite po potrebi.
+
     } else if (assetType == AssetType.audio) {
       final result = await FilePicker.platform.pickFiles(
         type: FileType.audio,
@@ -568,20 +611,31 @@ class DirectorService {
             file.name: file.path ?? '',
         };
 
-        // Now you can iterate over the Map
+        // Ispis, ako treba
         nameToPath.forEach((name, path) {
           print('$name -> $path');
         });
-        if (nameToPath == null || nameToPath.isEmpty) {
+
+        if (nameToPath.isEmpty) {
           isAdding = false;
           return;
         }
+
         final fileList = _sortFilesByDate(nameToPath);
         for (final file in fileList) {
           await _addAssetToLayer(2, AssetType.audio, file.path);
         }
+
+        // REBUILD layer 2 (audio sloj)
+        await layerPlayers[2]?.removeAllMediaSources();
+        for (int i = 0; i < layers[2].assets.length; i++) {
+          await layerPlayers[2]?.addMediaSource(i, layers[2].assets[i]);
+        }
+
+        await _previewOnPosition();
       }
     }
+    await rebuildLayerPlayer(0);
     isAdding = false;
   }
 
@@ -953,6 +1007,7 @@ class DirectorService {
     // Reset selection
     _selected.add(Selected(assetIndex: -1, layerIndex: -1));
 
+    // Provera validnosti selekcije
     if (layerIndex == -1 ||
         assetIndex1 == -1 ||
         assetIndex2 == -1 ||
@@ -960,20 +1015,24 @@ class DirectorService {
       return;
     }
 
-    final asset1 = layers[layerIndex].assets[assetIndex1];
+    // 1. Uklonimo asset1 iz liste (stari indeks)
+    final asset1 = layers[layerIndex].assets.removeAt(assetIndex1);
 
-    layers[layerIndex].assets.removeAt(assetIndex1);
-    await layerPlayers[layerIndex]?.removeMediaSource(assetIndex1);
-
+    // 2. Ubacimo ga na novu poziciju
     layers[layerIndex].assets.insert(assetIndex2, asset1);
-    await layerPlayers[layerIndex]?.addMediaSource(assetIndex2, asset1);
 
+    // 3. Osvetimo (refrešujemo) "begin" vrednosti
     refreshCalculatedFieldsInAssets(layerIndex, 0);
-    _layersChanged.add(true);
 
-    // Delay to let media sources update
-    await Future.delayed(const Duration(milliseconds: 100));
-    await _previewOnPosition();
+    // 4. Rebuild layer-u
+    await rebuildLayerPlayer(layerIndex);
+
+    _position.add(position);
+
+    // 6. Obeležimo da su se layere promenile, pa pozovemo preview
+    _layersChanged.add(true);
+    // await Future.delayed(const Duration(milliseconds: 100));
+    // await _previewOnPosition();
   }
 
   void moveTextAsset() {
@@ -1000,6 +1059,29 @@ class DirectorService {
     _previewOnPosition();
   }
 
+  Future<void> rebuildLayerPlayer(int layerIndex) async {
+    print("rebuildLayerPlayer: $layerIndex");
+    final player = layerPlayers[layerIndex];
+    if (player == null) return; // e.g. text layer has no player
+
+    print("rebuildLayerPlayer: $layerIndex nije null");
+    // 1) Optionally stop playback if it’s playing
+    await player.stop();
+
+    // 2) Clear out any existing media sources
+    await player.removeAllMediaSources();
+
+    // 3) Re-add media sources (one per asset in this layer)
+    for (int i = 0; i < layers[layerIndex].assets.length; i++) {
+      print("rebuildLayerPlayer: $layerIndex add asset $i");
+      await player.addMediaSource(i, layers[layerIndex].assets[i]);
+    }
+
+    layerPlayers[layerIndex]?.seek(position);
+  }
+
+
+
   // ---------------------------------------------------------------------------
   // Cutting / Deleting
   // ---------------------------------------------------------------------------
@@ -1007,53 +1089,70 @@ class DirectorService {
     if (isOperating) return;
     if (selected.layerIndex == -1 || selected.assetIndex == -1) return;
     print('>> DirectorService.cutVideo()');
-
-    final assetAfter = layers[selected.layerIndex].assets[selected.assetIndex];
-    final diff = position - assetAfter.begin!;
-
-    if (diff <= 0 || diff >= assetAfter.duration!) return;
     isCutting = true;
 
+    final layerIndex = selected.layerIndex;
+    final assetIndex = selected.assetIndex;
+
+    final assetAfter = layers[layerIndex].assets[assetIndex];
+    final diff = position - assetAfter.begin!;
+
+    // Zaustavimo ako je selektovana pozicija pre početka asset-a
+    // ili posle njegovog kraja (besmisleno seckanje).
+    if (diff <= 0 || diff >= assetAfter.duration!) {
+      isCutting = false;
+      return;
+    }
+
+    // Kloniramo "after" u "before"
     final assetBefore = Asset.clone(assetAfter);
     assetBefore.duration = diff;
     assetBefore.cutFrom = assetAfter.cutFrom ?? 0;
 
-    // Insert assetBefore before assetAfter
-    layers[selected.layerIndex].assets.insert(selected.assetIndex, assetBefore);
+    // 1. Ubacimo "before" ispred "after"
+    layers[layerIndex].assets.insert(assetIndex, assetBefore);
 
-    // Update assetAfter's properties
+    // 2. Izmenimo "after"
     assetAfter.begin = assetBefore.begin! + assetBefore.duration!;
     assetAfter.cutFrom = assetBefore.cutFrom! + diff;
     assetAfter.duration = assetAfter.duration! - diff;
 
-    // Ensure assetAfter's duration remains positive
+    // 3. Ako "after" sad ima nedozvoljeno trajanje, brišemo ga
     if (assetAfter.duration! <= 0) {
-      layers[selected.layerIndex].assets.removeAt(selected.assetIndex + 1);
-      await layerPlayers[selected.layerIndex]?.removeMediaSource(selected.assetIndex + 1);
-    } else {
-      // Rebuild the media sources
-      layerPlayers[selected.layerIndex]?.removeMediaSource(selected.assetIndex);
-      await layerPlayers[selected.layerIndex]?.addMediaSource(selected.assetIndex, assetBefore);
-      await layerPlayers[selected.layerIndex]?.addMediaSource(selected.assetIndex + 1, assetAfter);
+      layers[layerIndex].assets.removeAt(assetIndex + 1);
     }
 
-    _layersChanged.add(true);
+    // 4. Ažuriramo "begin" vrednosti ako je video ili audio;
+    //    ako je text, reorganizujemo text (npr. prelomi).
+    if (assetAfter.type == AssetType.text) {
+      reorganizeTextAssets(layerIndex);
+    } else {
+      refreshCalculatedFieldsInAssets(layerIndex, assetIndex);
+    }
 
+    // 5. Rebuild player (najvažniji deo, da se ne raspadne redosled)
+    await rebuildLayerPlayer(layerIndex);
+
+    // 6. Reset thumbnaila ako je video (tako da se ponovo generišu)
     if (assetAfter.type == AssetType.video) {
       assetAfter.thumbnailPath = null;
-      await _generateAllVideoThumbnails(layers[selected.layerIndex].assets);
+      assetAfter.thumbnailMedPath = null;
+      await _generateAllVideoThumbnails(layers[layerIndex].assets);
     }
 
+    // 7. Očistimo selekciju i obavestimo UI
     _selected.add(Selected(assetIndex: -1, layerIndex: -1));
     _appBar.add(true);
 
-    // Delay to let media sources update
-    await Future.delayed(const Duration(milliseconds: 300));
+    await Future.delayed(const Duration(milliseconds: 100));
+    await _previewOnPosition();
+
+    // Završavamo
     isCutting = false;
   }
 
 
-  void delete() {
+  Future<void> delete() async {
     if (isOperating) return;
     if (selected.layerIndex == -1 || selected.assetIndex == -1) return;
     print('>> DirectorService.delete()');
@@ -1061,33 +1160,37 @@ class DirectorService {
 
     final layerIndex = selected.layerIndex;
     final assetIndex = selected.assetIndex;
-    final assetType = assetSelected?.type;
 
+    // 1. Uklanjamo asset iz liste
     layers[layerIndex].assets.removeAt(assetIndex);
-    layerPlayers[layerIndex]?.removeMediaSource(assetIndex);
 
+    // 2. Ako nije text, refrešujemo begin vrednosti; ako jeste, reorganizujemo
+    final assetType = assetSelected?.type;
     if (assetType != AssetType.text) {
       refreshCalculatedFieldsInAssets(layerIndex, assetIndex);
     } else {
-      reorganizeTextAssets(layerIndex); // Use dynamic layer index
+      reorganizeTextAssets(layerIndex);
     }
 
-    _layersChanged.add(true);
+    // 3. Ponovo izgradimo MediaSource-ove u player-u
+    await rebuildLayerPlayer(layerIndex);
 
+    // 4. Očistimo selekciju
     _selected.add(Selected(assetIndex: -1, layerIndex: -1));
 
+    // 5. Proverimo da li su fajlovi nestali, i podesimo trajanje
     _filesNotExist.add(checkSomeFileNotExists());
-
-    isDeleting = false;
-
     if (position > duration) {
       _position.add(duration);
       scrollController.jumpTo(duration / 1000 * pixelsPerSecond);
     }
+
+    // 6. Obeležimo da je proces brisanja završen
+    isDeleting = false;
     _layersChanged.add(true);
     _appBar.add(true);
 
-    // Delay to let media sources update
+    // 8. Mali delay da se sve stabilizuje, zatim refresujemo preview
     Future.delayed(const Duration(milliseconds: 100), () {
       _previewOnPosition();
     });
