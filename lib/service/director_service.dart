@@ -204,9 +204,10 @@ class DirectorService {
   // Project management
   // ---------------------------------------------------------------------------
   Future<void> setProject(Project newProject) async {
+    logger.i('Setting new project: ${newProject.id}');
     isEntering = true;
 
-    // Reset osnovnih parametara
+    // Reset initial parameters
     _position.add(0);
     _selected.add(Selected(layerIndex: -1, assetIndex: -1));
     editingTextAsset = null;
@@ -217,47 +218,47 @@ class DirectorService {
     if (project != newProject) {
       project = newProject;
 
-      // Ako nema layersJson, podesi default
       if (project!.layersJson == null) {
         layers = [
           Layer(type: 'raster', volume: 1.0),
           Layer(type: 'vector'),
-          Layer(type: 'audio',  volume: 1.0),
+          Layer(type: 'audio', volume: 1.0),
         ];
+        logger.w('Project has no layersJson. Initialized default layers.');
       } else {
         layers = (json.decode(project!.layersJson!) as List)
             .map((layerMap) => Layer.fromJson(layerMap))
             .toList();
         _filesNotExist.add(checkSomeFileNotExists());
+        logger.i('Loaded layers from layersJson.');
       }
       _layersChanged.add(true);
 
-      // 1) Napravimo prazan spisak za Player-e
+      // Initialize layerPlayers
       layerPlayers = <LayerPlayer?>[];
-
-      // 2) Inicijalizacija u paraleli
       final initFutures = <Future>[];
       for (int i = 0; i < layers.length; i++) {
         if (i == 1) {
-          // npr. text layer nema player
           layerPlayers.add(null);
+          logger.i('Layer $i is a vector layer. No player initialized.');
         } else {
           final layerPlayer = LayerPlayer(layers[i]);
           initFutures.add(layerPlayer.initialize());
           layerPlayers.add(layerPlayer);
+          logger.i('LayerPlayer initialized for layer $i.');
         }
       }
 
-      // Sada paralelno cekamo sve initFuture-ove
       await Future.wait(initFutures);
 
-      // 3) Opcionalno, preview video asset-a takodje u paraleli
+      // Preview video assets
       final previewFutures = <Future>[];
       for (final layerPlayer in layerPlayers) {
         if (layerPlayer != null) {
           for (final asset in layerPlayer.layer.assets) {
             if (asset.type == AssetType.video) {
               previewFutures.add(layerPlayer.preview(asset.begin!));
+              logger.i('Preview initialized for asset at ${asset.begin} ms.');
             }
           }
         }
@@ -268,6 +269,7 @@ class DirectorService {
 
     isEntering = false;
     await _previewOnPosition();
+    logger.i('Project set and preview invoked.');
   }
 
   Future<void> reinitializeCurrentProjectInPlace() async {

@@ -56,9 +56,25 @@ class MultiSourceVideoPlayerController extends ValueNotifier<VideoPlayerValue>
       int index,
       String uri,
       int startMs,
-      int endMs, {
+      int? endMs, // Make endMs optional
+          {
         bool isAsset = false,
       }) async {
+    // Fetch video duration if not provided
+    if (endMs == null) {
+      int? videoDuration = await _getVideoDuration(uri, isAsset);
+      if (videoDuration != null) {
+        endMs = videoDuration;
+      } else {
+        throw Exception('Unable to fetch video duration for $uri');
+      }
+    }
+
+    // Ensure endMs is greater than startMs
+    if (endMs <= startMs) {
+      throw Exception('endMs must be greater than startMs for $uri');
+    }
+
     final clampedIndex = index.clamp(0, _sources.length);
     _sources.insert(
       clampedIndex,
@@ -69,7 +85,28 @@ class MultiSourceVideoPlayerController extends ValueNotifier<VideoPlayerValue>
         isAsset: isAsset,
       ),
     );
+
+    // If this is the only source, initialize the controller
+    if (_sources.length == 1) {
+      await _initializeActiveController();
+    }
   }
+
+  Future<int?> _getVideoDuration(String uri, bool isAsset) async {
+    try {
+      VideoPlayerController tempController = isAsset
+          ? VideoPlayerController.asset(uri)
+          : VideoPlayerController.network(uri);
+      await tempController.initialize();
+      int duration = tempController.value.duration.inMilliseconds;
+      await tempController.dispose();
+      return duration;
+    } catch (e) {
+      print('Error fetching video duration for $uri: $e');
+      return null;
+    }
+  }
+
 
   /// Remove the media source at [index].
   ///
